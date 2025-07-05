@@ -7,7 +7,6 @@ from datasets import load_dataset
 from transformers import AutoTokenizer
 import wandb
 from tqdm import tqdm
-import os
 
 
 class RMSNorm(nn.Module):

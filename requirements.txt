@@ -1,4 +1,7 @@
+--index-url https://download.pytorch.org/whl/cu128
 torch
+torchvision
+torchaudio
 transformers
 datasets
 wandb
