@@ -152,6 +152,102 @@ class SwiGLU(nn.Module):
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
 ```
 
+#### Model Update with Mixture of Experts
+##### Mixture of Experts (MoE) vs SwiGLU
+
+##### Why MoE Over Standard SwiGLU?
+
+Mixture of Experts (MoE) represents a paradigm shift from the traditional "one-size-fits-all" approach of standard feed-forward networks like SwiGLU. While SwiGLU provides excellent activation dynamics through its gated mechanism, it processes every token through the same parameters, creating a computational bottleneck as models scale. MoE breaks this limitation by creating specialized "expert" networks that can focus on different aspects of the input - some experts might specialize in mathematical reasoning, others in creative writing, and others in factual recall. The key insight is that for any given token, you typically only need a small subset of the model's total capacity. By routing each token to only the top-k most relevant experts (usually k=2), MoE achieves dramatically increased model capacity while maintaining similar computational costs. This sparsity is crucial for scaling: instead of making every parameter work on every token, MoE allows the model to grow its capacity by adding more experts without proportionally increasing inference cost. The routing mechanism learns to make intelligent decisions about which experts to activate, creating an implicit form of conditional computation that adapts to the input's complexity and type.
+
+##### Implementation Comparison
+
+##### Traditional SwiGLU (Dense)
+```python
+class SwiGLU(nn.Module):
+    """Standard SwiGLU - ALL tokens through ALL parameters"""
+    
+    def __init__(self, dim, hidden_dim=None):
+        super().__init__()
+        hidden_dim = hidden_dim or int(dim * 8 / 3)
+        self.w1 = nn.Linear(dim, hidden_dim, bias=False)  # Gate
+        self.w2 = nn.Linear(hidden_dim, dim, bias=False)   # Down
+        self.w3 = nn.Linear(dim, hidden_dim, bias=False)   # Up
+        
+    def forward(self, x):
+        # Every token uses the same computation path
+        return self.w2(F.silu(self.w1(x)) * self.w3(x))
+```
+
+##### MoE Layer (Sparse)
+```python
+class MoELayer(nn.Module):
+    """Mixture of Experts - tokens routed to specialized experts"""
+    
+    def __init__(self, dim, num_experts=8, top_k=2):
+        super().__init__()
+        self.num_experts = num_experts
+        self.top_k = top_k
+        
+        # Create multiple expert networks
+        self.experts = nn.ModuleList([
+            SwiGLU(dim) for _ in range(num_experts)
+        ])
+        
+        # Routing mechanism - learns which expert to use
+        self.gate = nn.Linear(dim, num_experts, bias=False)
+        
+    def forward(self, x):
+        batch_size, seq_len, dim = x.shape
+        x_flat = x.view(-1, dim)
+        
+        # Compute routing decisions
+        gate_logits = self.gate(x_flat)
+        top_k_logits, top_k_indices = torch.topk(gate_logits, self.top_k, dim=-1)
+        top_k_probs = F.softmax(top_k_logits, dim=-1)
+        
+        # Route tokens to selected experts
+        output = torch.zeros_like(x_flat)
+        for i, expert in enumerate(self.experts):
+            # Only process tokens routed to this expert
+            expert_mask = (top_k_indices == i).any(dim=-1)
+            if expert_mask.sum() > 0:
+                expert_tokens = x_flat[expert_mask]
+                expert_output = expert(expert_tokens)
+                
+                # Weighted combination based on gating probabilities
+                expert_indices = (top_k_indices == i).nonzero(as_tuple=True)
+                expert_weights = top_k_probs[expert_indices]
+                
+                for j, token_idx in enumerate(expert_indices[0]):
+                    output[token_idx] += expert_weights[j] * expert_output[j]
+        
+        return output.view(batch_size, seq_len, dim)
+```
+
+#### Key Advantages
+
+- **🚀 Massive Capacity**: 8 experts with top-2 routing = 4x parameters, same compute cost
+- **🎯 Specialization**: Each expert can focus on specific patterns or domains
+- **📈 Scalability**: Add more experts without proportional compute increase
+- **🧠 Adaptive**: Routing learns to match token complexity with expert capacity
+- **⚡ Efficiency**: Only 25% of parameters active per token (2 out of 8 experts)
+
+##### Usage in Model
+
+```python
+# Mix MoE and regular layers for optimal performance
+model = ModernMoELLM(
+    vocab_size=50257,
+    dim=512,
+    n_layers=8,
+    moe_layers=[2, 4, 6],  # Use MoE in specific layers
+    num_experts=8,
+    top_k=2
+)
+```
+
+This sparse activation pattern allows the model to scale to billions of parameters while maintaining reasonable inference costs, making it ideal for large language models that need to handle diverse tasks and domains.
+
 ### Model Initialization Strategy
 
 ```python
